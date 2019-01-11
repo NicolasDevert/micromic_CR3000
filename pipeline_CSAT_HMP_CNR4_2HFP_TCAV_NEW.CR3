@@ -1,0 +1,512 @@
+'Copyright (c) 2014 Campbell Scientific, Inc. All rights reserved.
+'The following sensors are measured:
+'CSAT3B three dimensional sonic anemometer
+'The site attendant must load in several constants and calibration values.
+'Search for the text string "unique" to find the locations where unique
+'constants and calibration values are entered.
+
+'wireling
+'   CNR4
+'yellow cable with red tape:
+'red : VX1
+'wite : H12
+'black/grey : masse
+'yellow cable without red tape:
+'big black : masse 2
+'little black : L9
+'white : H9
+'red : H8
+'blue : L8
+'grey : H10
+'yellow : L10
+'brown : H11
+'green : L11
+
+'     rain collector
+'black : P1
+'grey wite : masse
+
+'     blue heat flux plate
+'red : SW2
+'black : G
+'grey : masse3
+'green : H3
+'white : L3
+'yellow : H5
+'grey and purpul masse5
+
+'     red heat flux plate
+'red : SW2
+'black : G
+'green : H4
+'white : L4
+'grey : masse4
+'yellow : L5
+'grey and purpul : masse6
+
+'     HMP155
+'red : SW1
+'black : G
+'yellow : H1
+'white : L1
+'fil de fer : masse1
+'blue : H2
+
+'     CS650
+'red : nothing
+'green : C1
+'fil de fer and orange : G between C4 and C5
+'black : G between 5V and SW1
+
+'      CSAT3B
+'Big Cable:
+'   red : 12V
+'   black G
+'blue : last _ after SDM
+'green : G between C8 and 5V
+'orange : SDM
+'white : first _ before SDM
+PipeLineMode
+'---------------------------------------------
+' Define Constants
+'---------------------------------------------
+Const SDM_ADDR = 3 'S Address of Device
+Const SCAN_INTERVAL = 50 'Period of 100 ms = 10 Hz Measurement Rate
+Const MONITOR_INTERVAL = 5 'Period of 5 sec for monitor data
+Const STATS_INTERVAL = 1 'Period of 30 min for online statistics
+Const N_STATS = 1 'Increment size in the totalization functions
+Const CSAT_AZIMUTH = 313 'Unique value.
+'Compass azimuth of the -x axis. For the figure below, CSAT3B_AZIMUTH = 90.
+'() -> Compass coordinate system
+'{} -> Right handed coordinate system
+'
+' (N)
+' {-y}
+' |
+' |
+' |
+' |
+' |
+' (W) {+x} <-------[ ]----X--- {-x} (E)
+' / | \
+' CSAT3B Block | CSAT3B Transducers
+' |
+' |
+' v
+' {+y}
+' (S)
+'
+'The program computes the compass wind direction, using the constant
+'CSAT3B_AZIMUTH, and a CSAT3B wind direction. Good CSAT3B wind directions
+'are between -90 to 0 and 0 to 90 degrees, e.g. the wind is blowing into
+'the CSAT3B sensor head.
+'---------------------------------------------
+' Define Variables, Aliases, and Units
+'---------------------------------------------
+'CSAT3B primary outputs
+Public wind(5)
+Alias wind(1) = Ux 'x-axis wind
+Alias wind(2) = Uy 'y-axis wind
+Alias wind(3) = Uz 'z-axis wind
+Alias wind(4) = Ts 'Air Temperature
+Alias wind(5) = diag 'Diagnostics
+Units Ux = m/s
+Units Uy = m/s
+Units Uz = m/s
+Units Ts = degC
+Units diag = unitless
+'CSAT3B monitor outputs
+Public monitor(4)
+Alias monitor(1) = board_temp 'Board Temperature
+Alias monitor(2) = board_humidity 'Board Relative Humidity
+Alias monitor(3) = incline_pitch 'Inclinometer Pitch
+Alias monitor(4) = incline_roll 'Inclinometer Roll
+Units board_temp = degC
+Units board_humidity = percent
+Units incline_pitch = deg
+Units incline_roll = deg
+'CSAT3B diagnostic flags
+Public diag_bits(9) As Boolean
+Alias diag_bits(1) = Flag_LowAmp 'Low Amplitude Flag
+Alias diag_bits(2) = Flag_HighAmp 'High Amplitude Flag
+Alias diag_bits(3) = Flag_Tracking 'Tracking Flag
+Alias diag_bits(4) = Flag_HighDeltaC 'High Delta Speed of Sound Flag
+Alias diag_bits(5) = Flag_Acq 'Acquiring Flag
+Alias diag_bits(6) = Flag_LowVolt 'Low Supply Voltage Flag
+Alias diag_bits(7) = Flag_MemErr 'Memory Error Flag
+Alias diag_bits(8) = Flag_ADCSkip 'ADC Clock Error Flag
+Alias diag_bits(9) = Flag_TrigErr 'Trigger Error Flag
+'Wind directions and speed.
+Public wind_out(8)
+'Alias wind_out(1) = wind_spd - in compass coord system, same as CSAT3B
+'Alias wind_out(2) = result_wind_speed - in compass coord system, same as CSAT3B
+Alias wind_out(3) = wind_dir_compass
+'Alias wind_out(4) = standard_wind_dir - in compass coord system, same as CSAT3B
+Alias wind_out(5) = wind_speed
+Alias wind_out(6) = result_wind_speed
+Alias wind_out(7) = wind_dir_csat
+Alias wind_out(8) = standard_wind_dir
+Units wind_dir_compass = degrees
+Units wind_speed = m/s
+Units result_wind_speed = m/s
+Units wind_dir_csat = degrees
+Units standard_wind_dir = degrees
+'Working variables.
+Dim wind_east 'East wind in compass coordinate system
+Dim wind_north 'North wind in compass coordinate system
+Dim diag_integer As Long
+Dim disable_stats(2) As Boolean 'Intermediate processing disable flags
+'Other Variables
+Public battery_volt
+Units battery_volt = V
+Public panel_temp
+Units panel_temp = deg_C
+
+'HMP Variables
+Public AirTC
+Public RH
+Public Flag
+
+'CNR4 Variables
+'CNR4 sensitivities: refer to the Certificate of Calibration from Kipp & Zonen for sensitivity values
+'for each probes, and enter them below.
+Const pyranometer_up_sensitivity = 14.72 'unique sensitivity for upper pyranometer
+Const pyranometer_dn_sensitivity = 15.61 'unique sensitivity for lower pyranometer
+Const pyrgeometer_up_sensitivity = 14.13 'unique sensitivity for upper pyrgeometer
+Const pyrgeometer_dn_sensitivity = 12.73 'unique sensitivity for lower pyrgeometer
+
+'CNR4 multipliers
+Public cnr4_mult(4)
+Const pyranometer_up_mult = 1000/pyranometer_up_sensitivity '(W/m^2/mV)
+Const pyranometer_dn_mult = 1000/pyranometer_dn_sensitivity '(W/m^2/mV)
+Const pyrgeometer_up_mult = 1000/pyrgeometer_up_sensitivity '(W/m^2/mV)
+Const pyrgeometer_dn_mult = 1000/pyrgeometer_dn_sensitivity '(W/m^2/mV)
+
+'CNR4 sensor
+Public logger_temp, batt_volt
+Public cnr4(4)
+Alias cnr4(1) = SWTop
+Alias cnr4(2) = SWBottom
+Alias cnr4(3) = LWTop
+Alias cnr4(4) = LWBottom
+
+Public cnr4_T_C 'CNR4 thermistor temperature in Celsius
+Public cnr4_T_K 'CNR4 thermistor temperature in Kelvin
+Public LWTopC 'Downwelling long-wave radiation with temperature correction
+Public LWBottomC 'Upwelling long-wave radiation with temperature correction
+Public Rs_net 'short-wave net radiation
+Public Rl_net 'long-wave net radiation
+Public albedo 'Albedo
+Public Rn 'total net radiation
+
+Units logger_temp = deg_C
+Units batt_volt = volts
+Units SWTop = W/m^2
+Units SWBottom = W/m^2
+Units LWTop = W/m^2
+Units LWBottom = W/m^2
+Units cnr4_T_C = deg_C
+Units cnr4_T_K = K
+Units LWTopC = W/m^2
+Units LWBottomC = W/m^2
+Units Rs_net = W/m^2
+Units Rl_net = W/m^2
+Units albedo = W/m^2
+Units Rn = W/m^2
+Dim Rs, Vs_Vx
+
+'HFP Variables
+Const OUTPUT_INTERVAL = 30 'Online mean output interval in minutes.
+Const CAL_INTERVAL = 1440 'HFP01SC insitu calibration interval (minutes).
+Const END_CAL = OUTPUT_INTERVAL-1 'End HFP01SC insitu calibration one minute before the next Output.
+Const HFP01SC_CAL_1 = 16.300'Unique multiplier for HFP01SC #1 (1000/sensitivity).
+Const HFP01SC_CAL_2 = 16.556 'Unique multiplier for HFP01SC #2 (1000/sensitivity).
+
+Public shf(2)
+Public shf_cal(2)
+Units shf = W/m^2
+Units shf_cal = W/(m^2 mV)
+
+'HFP01SC calibration variables.
+Public shf_mV(2)
+Dim shf_mV_0(2)
+Dim shf_mV_180(2)
+Dim shf_mV_end(2)
+Dim V_Rf(2)
+Dim V_Rf_180(2)
+Dim shf_cal_on_f As Boolean
+Dim sw12_1_state As Boolean 'State of the switched 12Vdc port 1.
+Dim ii As Long
+
+'TCAV Variables
+Public soil_TC
+Units soil_TC = deg_C
+
+'Tipping Bucket Rain Gauge Variables
+Public Rain_mm
+Units Rain_mm=mm
+
+'Fine Wire Thermocouple Variable
+Public fw_TC
+
+'CS650 Soil Moisture Variables
+Public CS650(6)
+'Assign aliases to the public array
+Alias CS650(1)=VWC: Alias CS650(2)=EC: Alias CS650(3)=TSoil
+Alias CS650(4)=Perm: Alias CS650(5)=PerAvg: Alias CS650(6)=VoltR
+Units VWC = m^3/m^3: Units EC = dS/m: Units TSoil = deg_C
+
+'Time Variables
+Public Elapsed
+Public PTemp
+Public OutStat As Boolean, LastFileName as String * 25
+
+'---------------------------------------------
+' Define Data Tables
+'---------------------------------------------
+' Original Sonic Data
+DataTable (DataSonic,1,-1)
+ Sample (5,wind(1),IEEE4)
+EndTable
+' Monitor Data
+DataTable (DataMonitor,1,-1)
+ DataInterval (0,MONITOR_INTERVAL,Sec,10)
+ Sample (4,monitor(1),IEEE4)
+EndTable
+' Working Data
+DataTable (DataWindVec,TRUE,-1)
+ DataInterval (0,STATS_INTERVAL,Min,2)
+ 'Compute wind direction from CSAT data.
+ WindVector (1,wind_east,wind_north,IEEE4,disable_stats(1),0,1,2)
+ WindVector (1,Uy,Ux,IEEE4,disable_stats(1),0,1,2)
+EndTable
+' Statistics data.
+DataTable (DataStats,TRUE,-1)
+ DataInterval (10,STATS_INTERVAL,Sec,2)
+ Average (1,Ts,IEEE4,disable_stats(1))
+ StdDev (1,Ts,IEEE4,disable_stats(1))
+ Average (1,Ux,IEEE4,disable_stats(1))
+ StdDev (1,Ux,IEEE4,disable_stats(1))
+ Average (1,Uy,IEEE4,disable_stats(1))
+ StdDev (1,Uy,IEEE4,disable_stats(1))
+ Average (1,Uz,IEEE4,disable_stats(1))
+ StdDev (1,Uz,IEEE4,disable_stats(1))
+ Sample (1,wind_dir_compass,IEEE4)
+ Sample (1,wind_dir_csat,IEEE4)
+ Sample (1,wind_speed,IEEE4)
+ Sample (1,result_wind_speed,IEEE4)
+ Sample (1,standard_wind_dir,IEEE4)
+ Totalize (1,N_STATS,IEEE4,disable_stats(1))
+ Totalize (1,N_STATS,IEEE4,NOT (disable_stats(1) OR disable_stats(2)))
+ FieldNames ("csat_warnings")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_LowAmp) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_LowAmp_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_HighAmp) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_HighAmp_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_Tracking) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_Tracking_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_HighDeltaC) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_HighDeltaC_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_Acq) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_Acq_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_LowVolt) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_LowVolt_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_MemErr) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_MemErr_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_ADCSkip) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_ADCSkip_Tot")
+ Totalize (1,N_STATS,IEEE4,NOT (Flag_TrigErr) OR NOT (disable_stats(2)))
+ FieldNames ("Flag_TrigErr_Tot")
+ Average (1,panel_temp,IEEE4,FALSE)
+ Average (1,battery_volt,IEEE4,FALSE)
+ Average (1,board_temp,IEEE4,FALSE)
+ Average (1,board_humidity,IEEE4,FALSE)
+ Average (1,incline_pitch,IEEE4,FALSE)
+ Average (1,incline_roll,IEEE4,FALSE)
+EndTable
+'Relative Humidity Temp Table
+DataTable(Temp_RH,True,-1)
+  DataInterval(0,1,Min,0)
+  Average(1,AirTC,IEEE4,0)
+  Average(1,RH,IEEE4,0)
+EndTable
+'CNR4 Table
+DataTable (cnr4_data,True,-1)
+  DataInterval (0,1,Min,10)
+  Minimum (1,batt_volt,FP2,0,False)
+  Sample (1,logger_temp,FP2)
+  Average (4,cnr4(1),IEEE4,False)
+  Average (1,cnr4_T_C,IEEE4,False)
+  Average (1,cnr4_T_K,IEEE4,False)
+  Average (1,LWTopC,IEEE4,False)
+  Average (1,LWBottomC,IEEE4,False)
+  Average (1,Rs_net,IEEE4,False)
+  Average (1,Rl_net,IEEE4,False)
+  Average (1,albedo,IEEE4,False)
+  Average (1,Rn,IEEE4,False)
+EndTable
+'CNR4 HighSpeed
+DataTable (cnr4_ts,True,-1)
+  DataInterval (0,1,Sec,10)
+  Sample (4,cnr4(1),IEEE4)
+  Sample (1,cnr4_T_K,IEEE4)
+EndTable
+'HFP Table
+DataTable (HFP,TRUE,100)
+ DataInterval (0,1,Min,10)
+ Average (2,shf(1),IEEE4,shf_cal_on_f)
+ Sample (2,shf_cal(1),IEEE4)
+ Average (1,soil_TC,IEEE4,False)
+ Average (3,CS650(1),FP2,False)
+ Sample(3,CS650(4),IEEE4)
+ TableFile ("USR:TableName",8,-1,0,-1,Sec,OutStat,LastFileName)
+EndTable
+'Tipping Bucket Table
+DataTable(TB4_mm,True,-1)
+ DataInterval(0,15,min,0)
+ Totalize(1,Rain_mm,IEEE4,0)
+EndTable
+'Fine Wire Thermocouple Table
+DataTable(fw_Air,True,-1)
+ DataInterval(0,250,mSec,0)
+ Average(1,fw_TC,IEEE4,0)
+EndTable
+
+'---------------------------------------------
+' Main Program
+'---------------------------------------------
+BeginProg
+ SetStatus("UsrDriveSize","640000")
+ Move (Ux,5,NaN,1) 'Set all CSAT3B variables to NaN
+ cnr4_mult(1) = pyranometer_up_mult
+ cnr4_mult(2) = pyranometer_dn_mult
+ cnr4_mult(3) = pyrgeometer_up_mult
+ cnr4_mult(4) = pyrgeometer_dn_mult
+ shf_cal(1) = HFP01SC_CAL_1
+ shf_cal(2) = HFP01SC_CAL_2
+ PulseCountReset
+ Scan (SCAN_INTERVAL,mSec,500,0)
+   PortSet (9,Flag)
+   Timer (1,uSec,0)
+   PulseCount(Rain_mm,1,1,2,0,0.2,0)
+   TCDiff (fw_TC,1,mV20c,7,TypeE,PTemp,True ,0,250,1.0,0)
+   Battery (battery_volt) 'Measure battery voltage.
+   'CSAT3B(Destination, Bus, Address, OperatingMode)
+   CSAT3B(wind(),0,SDM_ADDR,0)
+   'Copy and convert CSAT3B for compass wind vector computation.
+   wind_east = -1*Uy
+   wind_north = Ux
+   'Break up the warning flags into separate bits.
+   diag_integer = diag
+   diag_bits(1) = diag_integer AND &h00000001
+   diag_bits(2) = diag_integer AND &h00000002
+   diag_bits(3) = diag_integer AND &h00000004
+   diag_bits(4) = diag_integer AND &h00000008
+   diag_bits(5) = diag_integer AND &h00000010
+   diag_bits(6) = diag_integer AND &h00000020
+   diag_bits(7) = diag_integer AND &h00000040
+   diag_bits(8) = diag_integer AND &h00000080
+   diag_bits(9) = diag_integer AND &h00000100
+   'Turn on this intermediate processing disable flag when any
+   'warning flag is set or the data returned is NaN
+   disable_stats(1) = ((diag_integer AND &hffffffff) OR (diag = NaN))
+   'Turn on this intermediate processing disable flag only when
+   'CSAT3B diagnostic warning flags are set
+   disable_stats(2) = ((diag_integer AND &hffffffff) AND NOT (diag = NaN))
+   'Compute the online wind vector statistics.
+   CallTable DataWindVec
+   If (DataWindVec.Output(1,1) ) Then
+   GetRecord (wind_out(1),DataWindVec,1)
+   'Compass wind direction will be 0 to 360 degrees.
+   
+   'wind_dir_compass =  (360 + CSAT_AZIMUTH - wind_dir_compass) MOD 360
+   wind_dir_compass = (wind_dir_compass+CSAT_AZIMUTH) MOD 360
+   'CSAT wind direction will be 0 to 180 or 0 to -180 degrees.
+   If ( wind_dir_csat ) > 180 Then ( wind_dir_csat = wind_dir_csat-360 )
+   EndIf
+   Elapsed = Timer (1,Sec,4)
+   If (Elapsed) > 6 Then ( Flag = 1 )
+   CallTable DataSonic
+   CallTable DataStats
+   CallTable(TB4_mm)
+   CallTable(fw_Air)
+ NextScan
+SlowSequence
+ Scan(MONITOR_INTERVAL,sec,0,0)
+   'CSAT3BMonitor(Destination, Bus, Address)
+   CSAT3BMonitor (monitor(),0,SDM_ADDR)
+   CallTable(DataMonitor)
+ NextScan
+SlowSequence
+ Scan(10,sec,0,0)
+    Flag = 0
+    VoltDiff (AirTC,1,mV1000,1,True,0,_60Hz,.14,-80)
+    VoltDiff (RH,1,mV1000,2,True,0,_60Hz,0.1,0)
+    SDI12Recorder (CS650(),1,"0","M3!",1.0,0,-1)
+    PortSet (9,Flag)
+    Timer (1,uSec,2)
+    If RH>100 AND RH<108 Then RH=100
+    CallTable(Temp_RH)
+ NextScan
+SlowSequence
+ Scan(1,sec,0,0)
+    'CNR4 radiation measurements
+    VoltDiff (cnr4(),4,mV20C,8,True ,0,_60Hz,cnr4_mult(),0)
+    'CNR4 thermistor measurement
+    BrHalf (Vs_Vx,1,mv5000,23,Vx1,1,2500,True ,0,250,1.0,0)
+    Rs = 1000*(Vs_Vx/(1-Vs_Vx))
+    cnr4_T_C = 1/(1.0295e-3+2.391e-4*LN(Rs)+1.568e-7*(LN(Rs))^3)-273.15
+    'Convert CNR4 temperature to Kelvin
+    cnr4_T_K = cnr4_T_C+273.15
+    'Correct the long-wave radiation values from pyrgeometers
+    LWTopC = LWTop+5.67e-8*cnr4_T_K^4
+    LWBottomC = LWBottom+5.67e-8*cnr4_T_K^4
+    'Compute short-wave net radiation
+    Rs_net = SWTop - SWBottom
+    'Compute long-wave net radiation
+    Rl_net = LWTopC - LWBottomC
+    'Compute albedo
+    albedo = SWBottom/SWTop
+    'Compute net radiation
+    Rn = Rs_net + Rl_net
+    CallTable cnr4_data
+    CallTable cnr4_ts
+ NextScan
+ SlowSequence
+ Scan (1,Sec,3,0)
+   'Measure the HFP01SC soil heat flux plates.
+   VoltDiff (shf_mV(1),2,mV50C,3,TRUE,0,_60Hz,1,0)
+   PanelTemp (PTemp,250)
+   TCDiff (soil_TC,1,mV20c,6,TypeE,PTemp,True ,0,250,1.0,0)
+   'Apply calibration to HFP01SC soil heat flux plates.
+   For ii = 1 To 2
+     shf(ii) = shf_mV(ii)*shf_cal(ii)
+   Next ii
+   'Power the HFP01SC heaters.
+   PortSet (10,sw12_1_state)
+   'Measure voltage across the heater (Rf_V).
+   VoltSe (V_Rf(1),2,mV5000,9,TRUE,0,_60Hz,0.001,0)
+   CallTable (HFP)
+   'Begin HFP01SC calibration on a fixed interval.
+   If ( IfTime (1,CAL_INTERVAL,Min) ) Then
+     shf_cal_on_f = TRUE
+     Move (shf_mV_0(1),2,shf_mV(1),2)
+     sw12_1_state = TRUE
+   EndIf
+   If ( IfTime (4,CAL_INTERVAL,Min) ) Then
+     Move (shf_mV_180(1),2,shf_mV(1),2)
+     Move (V_Rf_180(1),2,V_Rf(1),2)
+     sw12_1_state = FALSE
+   EndIf
+   If ( IfTime (END_CAL,CAL_INTERVAL,Min) ) Then
+     Move (shf_mV_end(1),2,shf_mV(1),2)
+     'Compute new HFP01SC calibration factors.
+     For ii = 1 To 2
+       shf_cal(ii) = V_Rf_180(ii)*V_Rf_180(ii)*128.7/ABS (((shf_mV_0(ii)+shf_mV_end(ii))/2)-shf_mV_180(ii))
+     Next ii
+       shf_cal_on_f = FALSE
+   EndIf
+ NextScan
+EndProg
+    
+   `        
